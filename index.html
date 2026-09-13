@@ -145,6 +145,7 @@
   </div>
 
   <script>
+    // STRICT LOWERCASE UUIDs REQUIRED FOR iOS WEB BLUETOOTH
     const SERVICE_UUID = "19b10000-e8f2-537e-4f6c-d104768a1214";
     const TX_UUID      = "19b10001-e8f2-537e-4f6c-d104768a1214";
     const RX_UUID      = "19b10002-e8f2-537e-4f6c-d104768a1214";
@@ -153,12 +154,20 @@
 
     async function connectGaugesBLE() {
       try {
+        // UPDATED SCAN RESPONSE FILTERING FOR BLUEFY & iOS
         const device = await navigator.bluetooth.requestDevice({
-          filters: [{ name: 'Corolla-Dual-Gauges' }],
+          filters: [
+            { name: 'Corolla-Dual-Gauges' },
+            { namePrefix: 'Corolla' },
+            { services: [SERVICE_UUID] }
+          ],
           optionalServices: [SERVICE_UUID]
         });
 
+        console.log("Found device, connecting to GATT...");
         const server = await device.gatt.connect();
+
+        console.log("Getting primary service...");
         const service = await server.getPrimaryService(SERVICE_UUID);
 
         // Receive Telemetry
@@ -183,7 +192,7 @@
 
       } catch (err) {
         console.error("BLE Connect Failed:", err);
-        alert("BLE Connection Failed. Ensure you are using Bluefy browser on iOS.");
+        alert("BLE Connection Error: " + err.message);
       }
     }
 
@@ -192,7 +201,7 @@
       const s1 = parseInt(document.getElementById('left-pid').value);
       const s2 = parseInt(document.getElementById('right-pid').value);
       
-      const payload = JSON.stringify({ s1_pid: s1, s2_pid: s2 });
+      const payload = JSON.stringify({ action: "preview", s1: { pid: s1 }, s2: { pid: s2 } });
       await rxCharacteristic.writeValue(new TextEncoder().encode(payload));
     }
 
