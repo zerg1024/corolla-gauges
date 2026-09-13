@@ -154,20 +154,19 @@
 
     async function connectGaugesBLE() {
       try {
-        // UPDATED SCAN RESPONSE FILTERING FOR BLUEFY & iOS
+        // ALLOW ALL NEARBY DEVICES SO BLUEFY DOES NOT FILTER OUT THE GAUGE CLUSTER
         const device = await navigator.bluetooth.requestDevice({
-          filters: [
-            { name: 'Corolla-Dual-Gauges' },
-            { namePrefix: 'Corolla' },
-            { services: [SERVICE_UUID] }
-          ],
+          acceptAllDevices: true,
           optionalServices: [SERVICE_UUID]
         });
 
-        console.log("Found device, connecting to GATT...");
+        // Handle Disconnection Events
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        console.log("Connecting to GATT Server...");
         const server = await device.gatt.connect();
 
-        console.log("Getting primary service...");
+        console.log("Accessing Primary Service...");
         const service = await server.getPrimaryService(SERVICE_UUID);
 
         // Receive Telemetry
@@ -194,6 +193,14 @@
         console.error("BLE Connect Failed:", err);
         alert("BLE Connection Error: " + err.message);
       }
+    }
+
+    function onDisconnected(event) {
+      console.log("Bluetooth Device Disconnected.");
+      document.getElementById('status-badge').innerText = "DISCONNECTED";
+      document.getElementById('status-badge').classList.remove("connected");
+      document.getElementById('connect-btn').innerText = "Connect via Bluetooth";
+      rxCharacteristic = null;
     }
 
     async function sendConfig() {
