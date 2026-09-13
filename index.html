@@ -127,6 +127,7 @@
       <option value="0">Engine RPM</option>
       <option value="1">Vehicle Speed</option>
       <option value="2">Coolant Temperature</option>
+      <option value="6">Transmission Temp</option>
       <option value="7" selected>Boost / Vacuum</option>
     </select>
 
@@ -153,7 +154,7 @@
     let bluetoothDevice = null;
     let rxCharacteristic = null;
 
-    // --- AUTO-RECONNECT ON PAGE LOAD ---
+    // Auto-reconnect on startup if previously paired
     window.addEventListener('DOMContentLoaded', async () => {
       if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return;
 
@@ -162,7 +163,7 @@
         const pairedDevice = devices.find(d => d.name === 'Corolla-Dual-Gauges' || d.id === localStorage.getItem('last_ble_id'));
 
         if (pairedDevice) {
-          console.log("Found previously paired device, attempting auto-reconnect...");
+          console.log("Found paired device. Attempting background reconnect...");
           updateStatus("CONNECTING...", "connecting");
           await setupDeviceConnection(pairedDevice);
         }
@@ -172,7 +173,6 @@
       }
     });
 
-    // --- MANUAL CONNECT / PAIRING ---
     async function connectGaugesBLE() {
       try {
         updateStatus("SCANNING...", "connecting");
@@ -182,7 +182,6 @@
           optionalServices: [SERVICE_UUID]
         });
 
-        // Remember device ID for future auto-reconnects
         if (device.id) {
           localStorage.setItem('last_ble_id', device.id);
         }
@@ -196,7 +195,6 @@
       }
     }
 
-    // --- SHARED GATT CONNECTION PIPELINE ---
     async function setupDeviceConnection(device) {
       bluetoothDevice = device;
       bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
@@ -204,10 +202,10 @@
       console.log("Connecting to GATT Server...");
       const server = await bluetoothDevice.gatt.connect();
 
-      console.log("Getting Primary Service...");
+      console.log("Accessing Service...");
       const service = await server.getPrimaryService(SERVICE_UUID);
 
-      // Receive Telemetry Notifications
+      // Subscribe to Telemetry Notifications
       const txChar = await service.getCharacteristic(TX_UUID);
       await txChar.startNotifications();
       txChar.addEventListener('characteristicvaluechanged', (event) => {
@@ -220,28 +218,27 @@
         document.getElementById('val-boost').innerText = (data.boost || 0).toFixed(1) + " PSI";
       });
 
-      // Write Channel
+      // Bind Write Channel
       rxCharacteristic = await service.getCharacteristic(RX_UUID);
 
       updateStatus("CONNECTED", "connected");
       document.getElementById('connect-btn').innerText = "Gauges Paired";
     }
 
-    // --- DISCONNECT & RETRY LOGIC ---
     function onDisconnected(event) {
       console.log("Bluetooth Device Disconnected.");
       updateStatus("DISCONNECTED", "");
       document.getElementById('connect-btn').innerText = "Reconnect Gauges";
       rxCharacteristic = null;
 
-      // Attempt background silent reconnect after 3 seconds
+      // Auto retry background reconnect
       setTimeout(async () => {
         if (bluetoothDevice && !bluetoothDevice.gatt.connected) {
           try {
-            console.log("Attempting automatic re-establishment...");
+            console.log("Re-establishing connection...");
             await setupDeviceConnection(bluetoothDevice);
           } catch (e) {
-            console.log("Background reconnect pending user action.");
+            console.log("Background reconnect pending user trigger.");
           }
         }
       }, 3000);
@@ -254,18 +251,34 @@
     }
 
     async function sendConfig() {
-      if (!rxCharacteristic) return;
+      if (!rxCharacteristic) {
+        console.warn("RX Characteristic unavailable.");
+        return;
+      }
+      
       const s1 = parseInt(document.getElementById('left-pid').value);
       const s2 = parseInt(document.getElementById('right-pid').value);
       
-      const payload = JSON.stringify({ action: "preview", s1: { pid: s1 }, s2: { pid: s2 } });
-      await rxCharacteristic.writeValue(new TextEncoder().encode(payload));
+      const payload = JSON.stringify({ 
+        action: "preview", 
+        s1_pid: s1, 
+        s2_pid: s2 
+      });
+
+      try {
+        const encoder = new TextEncoder();
+        await rxCharacteristic.writeValue(encoder.encode(payload));
+        console.log("Payload sent:", payload);
+      } catch (err) {
+        console.error("Write error:", err);
+      }
     }
 
     async function sendAction(actionName) {
       if (!rxCharacteristic) return;
       const payload = JSON.stringify({ action: actionName });
-      await rxCharacteristic.writeValue(new TextEncoder().encode(payload));
+      const encoder = new TextEncoder();
+      await rxCharacteristic.writeValue(encoder.encode(payload));
     }
   </script>
 </body>
