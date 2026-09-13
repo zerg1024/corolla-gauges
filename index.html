@@ -40,6 +40,7 @@
       background-color: var(--border);
     }
     .status.connected { background-color: #238636; color: #fff; }
+    .status.connecting { background-color: #9e6a03; color: #fff; }
     .card {
       background-color: var(--card);
       border: 1px solid var(--border);
@@ -145,62 +146,111 @@
   </div>
 
   <script>
-    // STRICT LOWERCASE UUIDs REQUIRED FOR iOS WEB BLUETOOTH
     const SERVICE_UUID = "19b10000-e8f2-537e-4f6c-d104768a1214";
     const TX_UUID      = "19b10001-e8f2-537e-4f6c-d104768a1214";
     const RX_UUID      = "19b10002-e8f2-537e-4f6c-d104768a1214";
 
+    let bluetoothDevice = null;
     let rxCharacteristic = null;
 
+    // --- AUTO-RECONNECT ON PAGE LOAD ---
+    window.addEventListener('DOMContentLoaded', async () => {
+      if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return;
+
+      try {
+        const devices = await navigator.bluetooth.getDevices();
+        const pairedDevice = devices.find(d => d.name === 'Corolla-Dual-Gauges' || d.id === localStorage.getItem('last_ble_id'));
+
+        if (pairedDevice) {
+          console.log("Found previously paired device, attempting auto-reconnect...");
+          updateStatus("CONNECTING...", "connecting");
+          await setupDeviceConnection(pairedDevice);
+        }
+      } catch (err) {
+        console.warn("Auto-reconnect skipped:", err);
+        updateStatus("DISCONNECTED", "");
+      }
+    });
+
+    // --- MANUAL CONNECT / PAIRING ---
     async function connectGaugesBLE() {
       try {
-        // ALLOW ALL NEARBY DEVICES SO BLUEFY DOES NOT FILTER OUT THE GAUGE CLUSTER
+        updateStatus("SCANNING...", "connecting");
+
         const device = await navigator.bluetooth.requestDevice({
           acceptAllDevices: true,
           optionalServices: [SERVICE_UUID]
         });
 
-        // Handle Disconnection Events
-        device.addEventListener('gattserverdisconnected', onDisconnected);
+        // Remember device ID for future auto-reconnects
+        if (device.id) {
+          localStorage.setItem('last_ble_id', device.id);
+        }
 
-        console.log("Connecting to GATT Server...");
-        const server = await device.gatt.connect();
-
-        console.log("Accessing Primary Service...");
-        const service = await server.getPrimaryService(SERVICE_UUID);
-
-        // Receive Telemetry
-        const txChar = await service.getCharacteristic(TX_UUID);
-        await txChar.startNotifications();
-        txChar.addEventListener('characteristicvaluechanged', (event) => {
-          const decoder = new TextDecoder('utf-8');
-          const data = JSON.parse(decoder.decode(event.target.value));
-          
-          document.getElementById('val-rpm').innerText = data.rpm || 0;
-          document.getElementById('val-speed').innerText = (data.speed || 0) + " MPH";
-          document.getElementById('val-coolant').innerText = (data.coolant || 0) + " °F";
-          document.getElementById('val-boost').innerText = (data.boost || 0).toFixed(1) + " PSI";
-        });
-
-        // Write Channel
-        rxCharacteristic = await service.getCharacteristic(RX_UUID);
-
-        document.getElementById('status-badge').innerText = "CONNECTED";
-        document.getElementById('status-badge').classList.add("connected");
-        document.getElementById('connect-btn').innerText = "Gauges Paired";
+        await setupDeviceConnection(device);
 
       } catch (err) {
         console.error("BLE Connect Failed:", err);
+        updateStatus("DISCONNECTED", "");
         alert("BLE Connection Error: " + err.message);
       }
     }
 
+    // --- SHARED GATT CONNECTION PIPELINE ---
+    async function setupDeviceConnection(device) {
+      bluetoothDevice = device;
+      bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+      console.log("Connecting to GATT Server...");
+      const server = await bluetoothDevice.gatt.connect();
+
+      console.log("Getting Primary Service...");
+      const service = await server.getPrimaryService(SERVICE_UUID);
+
+      // Receive Telemetry Notifications
+      const txChar = await service.getCharacteristic(TX_UUID);
+      await txChar.startNotifications();
+      txChar.addEventListener('characteristicvaluechanged', (event) => {
+        const decoder = new TextDecoder('utf-8');
+        const data = JSON.parse(decoder.decode(event.target.value));
+        
+        document.getElementById('val-rpm').innerText = data.rpm || 0;
+        document.getElementById('val-speed').innerText = (data.speed || 0) + " MPH";
+        document.getElementById('val-coolant').innerText = (data.coolant || 0) + " °F";
+        document.getElementById('val-boost').innerText = (data.boost || 0).toFixed(1) + " PSI";
+      });
+
+      // Write Channel
+      rxCharacteristic = await service.getCharacteristic(RX_UUID);
+
+      updateStatus("CONNECTED", "connected");
+      document.getElementById('connect-btn').innerText = "Gauges Paired";
+    }
+
+    // --- DISCONNECT & RETRY LOGIC ---
     function onDisconnected(event) {
       console.log("Bluetooth Device Disconnected.");
-      document.getElementById('status-badge').innerText = "DISCONNECTED";
-      document.getElementById('status-badge').classList.remove("connected");
-      document.getElementById('connect-btn').innerText = "Connect via Bluetooth";
+      updateStatus("DISCONNECTED", "");
+      document.getElementById('connect-btn').innerText = "Reconnect Gauges";
       rxCharacteristic = null;
+
+      // Attempt background silent reconnect after 3 seconds
+      setTimeout(async () => {
+        if (bluetoothDevice && !bluetoothDevice.gatt.connected) {
+          try {
+            console.log("Attempting automatic re-establishment...");
+            await setupDeviceConnection(bluetoothDevice);
+          } catch (e) {
+            console.log("Background reconnect pending user action.");
+          }
+        }
+      }, 3000);
+    }
+
+    function updateStatus(text, className) {
+      const badge = document.getElementById('status-badge');
+      badge.innerText = text;
+      badge.className = "status " + className;
     }
 
     async function sendConfig() {
